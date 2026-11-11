@@ -72,4 +72,4 @@ Locally verified on 11 November 2026: restricted-role write denial, row limits, 
 
 The earlier README credited the **Cat Communist Party** project and linked to `Cat-Communist-Party-CCP/CASS`; that credit is retained here. The inspected commits identify **Rayan Rahman** and describe the UI as **Chartbrew-style**. This review does not establish ownership of third-party assets or change their attribution.
 
-The previous README advertised MIT, but this checkout contains no LICENSE file. No license has been invented or granted by this update; confirm the intended license before redistribution. Broken links to nonexistent API, architecture and contribution documents have been replaced with the working instructions above.
+Original project code and documentation are licensed under the [MIT License](LICENSE). Existing third-party code, assets and dependencies retain their own licenses and attribution; this license grants no additional rights to them. Broken links to nonexistent API, architecture and contribution documents have been replaced with the working instructions above.
