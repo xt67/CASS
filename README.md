@@ -1,211 +1,75 @@
-# CASS - Conversational AI SQL System
+# CASS — Conversational AI SQL System
 
-<p align="center">
-  <img src="docs/assets/cass-logo.png" alt="CASS Logo" width="200"/>
-</p>
+Ask questions about a PostgreSQL database using a local Ollama model, inspect the SQL, and view the results. The browser supports authenticated streaming and direct SQL queries.
 
-<p align="center">
-  <strong>🤖 Ask questions in plain English, get SQL answers instantly</strong>
-</p>
+![Query dashboard](docs/screenshots/release-query.png)
 
-<p align="center">
-  <a href="https://github.com/Cat-Communist-Party-CCP/CASS/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" />
-  </a>
-  <a href="https://github.com/Cat-Communist-Party-CCP/CASS/stargazers">
-    <img src="https://img.shields.io/github/stars/Cat-Communist-Party-CCP/CASS" alt="Stars" />
-  </a>
-  <a href="https://python.org">
-    <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python" />
-  </a>
-</p>
+## Local setup
 
----
-
-## 🎯 What is CASS?
-
-CASS is an **open-source AI-powered SQL assistant** that lets you query databases using natural language. No SQL knowledge required – just ask your question in plain English!
-
-```
-You: "Who are our top 5 customers by revenue this month?"
-
-CASS:
-  📝 Generated SQL: SELECT customer_name, SUM(amount) FROM orders...
-  📊 Results: [Interactive Table]
-  📈 Chart: [Bar Chart Visualization]
-  💬 Answer: "Your top customer is Acme Corp with $45,000..."
-```
-
----
-
-## ✨ Features
-
-| Feature                    | Description                                     |
-| -------------------------- | ----------------------------------------------- |
-| 🗣️ **Natural Language**    | Ask questions in plain English                  |
-| 🦙 **100% Local & Free**   | Runs on Ollama – no API costs, complete privacy |
-| ⚡ **Real-time Streaming** | See responses as they generate                  |
-| 📊 **Rich Visualizations** | Auto-generated tables and charts                |
-| 🎨 **Modern UI**           | Beautiful, responsive chat interface            |
-| 🐘 **PostgreSQL**          | Production-ready database support               |
-| 🔄 **Smart Fallback**      | Automatic model switching for reliability       |
-
----
-
-## 🖼️ Screenshots
-
-<p align="center">
-  <i>Screenshots coming soon!</i>
-</p>
-
----
-
-## 🛠️ How It Works
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Your Question │ ──▶ │   CASS Agent    │ ──▶ │   SQL Query     │
-│   (Plain English)│     │   (Ollama LLM)  │     │   + Results     │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                │
-                                ▼
-                        ┌─────────────────┐
-                        │   PostgreSQL    │
-                        │   Database      │
-                        └─────────────────┘
-```
-
-1. **You ask** a question in natural language
-2. **CASS analyzes** your question using a local AI model
-3. **Generates SQL** based on your database schema
-4. **Executes safely** and returns results
-5. **Visualizes** data with tables and charts
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- [Python 3.10+](https://python.org)
-- [Node.js 18+](https://nodejs.org)
-- [Ollama](https://ollama.ai) (for local AI)
-- [Docker](https://docker.com) (for PostgreSQL)
-
-### Installation
+Python 3.12, Node 24, PostgreSQL and Ollama are required.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/Cat-Communist-Party-CCP/CASS.git
+git clone https://github.com/xt67/CASS.git
 cd CASS
+ollama pull qwen3:4b
+docker compose up -d postgres
+```
 
-# 2. Install the AI model
-ollama pull sqlcoder:7b
+Initialize a dedicated read-only role using `database/restricted-role.sql` as the database owner, then set its password separately. The sample schema and seed data are loaded by Compose on first startup.
 
-# 3. Start the database
-docker-compose up -d
+From `backend/`:
 
-# 4. Start the backend
-cd backend
+```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn src.cass.server.app:app --reload
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
+pip install -r requirements-test.lock
+uvicorn cass.server.app:app --app-dir src --host 127.0.0.1 --port 8001
+```
 
-# 5. Start the frontend (new terminal)
-cd frontend
-npm install
+Set process environment variables before launching:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Connection URL for the restricted role |
+| `OLLAMA_MODEL` | Use `qwen3:4b` for the locally validated configuration; fallback default `sqlcoder:7b` requires separate installation/validation |
+| `OLLAMA_BASE_URL` | Defaults to `http://localhost:11434` |
+| `CASS_API_KEY` | A strong server-side token; enter it via the database connection button in the browser |
+| `CASS_ALLOW_ANONYMOUS` | Set to `1` only for explicit local development without a token |
+| `CASS_ALLOWED_ORIGINS` | Comma-separated frontend origins; defaults to `http://localhost:3000` |
+| `CASS_MAX_ROWS` | Maximum query result size, default 500 |
+| `CASS_QUERY_TIMEOUT` | Query timeout in seconds, default 10 |
+
+The backend reads process environment variables; a `.env` file is not automatically loaded. Data routes fail closed when authentication is unconfigured. Keep deployment behind HTTPS and use a restricted database role. Tokens stay in browser memory, never in query URLs or frontend build variables.
+
+From `frontend/`:
+
+```bash
+npm ci
 npm run dev
 ```
 
-### 🎉 Open http://localhost:3000 and start asking questions!
+Open `http://localhost:3000`. For a separate production backend, set `VITE_API_BASE_URL` to its HTTPS origin before `npm run build`; otherwise configure a same-origin `/api` reverse proxy. No API key belongs in a `VITE_` variable.
 
----
+## Validation and limits
 
-## 💡 Example Queries
+```bash
+# repository root
+python -m pytest backend/tests -q
+# frontend directory
+npm test
+npm run lint
+npm run build
+```
 
-Try asking CASS:
+Optional live PostgreSQL tests require `CASS_TEST_DATABASE_URL` pointing to a disposable database. They create and remove uniquely named test roles/tables. The CI service uses trust authentication only inside its disposable test environment; production must use password authentication.
 
-| Query                                        | What it does              |
-| -------------------------------------------- | ------------------------- |
-| _"Show me all orders from last week"_        | Filters by date range     |
-| _"What's the average order value by city?"_  | Aggregation with grouping |
-| _"List products with less than 10 in stock"_ | Conditional filtering     |
-| _"Who are our most active customers?"_       | Ranking and sorting       |
-| _"Compare monthly revenue for 2024"_         | Time-series analysis      |
+Generated and direct SQL pass through single-query AST validation, a read-only transaction, a row cap and a timeout. Parameter values are bound and table identifiers quoted. These controls are not a complete sandbox: the role must only access data intended for users, and deployment still needs concurrency/rate limits appropriate to its audience.
 
----
+Locally verified on 11 November 2026: restricted-role write denial, row limits, timeout recovery, authentication, streaming success/failure, browser query execution, production build, and three reference questions using `qwen3:4b`. See `docs/local-model-validation.json`. This small sample does not establish general SQL accuracy. `backend/validate_local_model.py` reruns it against a seeded disposable database. No hosted deployment has been performed.
 
-## 🏗️ Tech Stack
+## Attribution and repository history
 
-| Layer          | Technology                                |
-| -------------- | ----------------------------------------- |
-| **AI Model**   | [Ollama](https://ollama.ai) + sqlcoder:7b |
-| **Backend**    | Python 3.10+, FastAPI, SSE Streaming      |
-| **Frontend**   | HTML/CSS/JS, Tailwind CSS                 |
-| **Database**   | PostgreSQL 14+                            |
-| **Deployment** | Vercel (frontend), Railway (backend)      |
+The earlier README credited the **Cat Communist Party** project and linked to `Cat-Communist-Party-CCP/CASS`; that credit is retained here. The inspected commits identify **Rayan Rahman** and describe the UI as **Chartbrew-style**. This review does not establish ownership of third-party assets or change their attribution.
 
----
-
-## 📖 Documentation
-
-| Document                                   | Description               |
-| ------------------------------------------ | ------------------------- |
-| [Getting Started](docs/GETTING_STARTED.md) | Full installation guide   |
-| [API Reference](docs/API.md)               | Backend API documentation |
-| [Architecture](docs/ARCHITECTURE.md)       | System design overview    |
-| [Contributing](CONTRIBUTING.md)            | How to contribute         |
-
----
-
-## 🔒 Privacy & Security
-
-- ✅ **100% Local** - Your data never leaves your infrastructure
-- ✅ **No API Keys** - Uses local Ollama, no external AI services
-- ✅ **SQL Validation** - Blocks dangerous queries (DROP, DELETE without WHERE)
-- ✅ **Open Source** - Fully auditable codebase
-
----
-
-## 🤝 Contributing
-
-We welcome contributions! Here's how to get started:
-
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
-5. **Open** a Pull Request
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
-
----
-
-## ⭐ Support
-
-If you find CASS useful, please consider:
-
-- ⭐ **Starring** this repository
-- 🐛 **Reporting** bugs and issues
-- 💡 **Suggesting** new features
-- 🤝 **Contributing** code or documentation
-
----
-
-## 📬 Contact
-
-- **GitHub Issues**: [Report a bug](https://github.com/Cat-Communist-Party-CCP/CASS/issues)
-- **Discussions**: [Ask questions](https://github.com/Cat-Communist-Party-CCP/CASS/discussions)
-
----
-
-<p align="center">
-  Made with ❤️ by the <a href="https://github.com/Cat-Communist-Party-CCP">Cat Communist Party</a>
-</p>
+The previous README advertised MIT, but this checkout contains no LICENSE file. No license has been invented or granted by this update; confirm the intended license before redistribution. Broken links to nonexistent API, architecture and contribution documents have been replaced with the working instructions above.

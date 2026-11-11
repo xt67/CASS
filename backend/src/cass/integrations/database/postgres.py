@@ -5,6 +5,10 @@ Handles database connections and query execution using asyncpg.
 """
 
 import asyncpg
+import asyncio
+import os
+import sqlglot
+from sqlglot import exp
 from typing import Any
 
 
@@ -30,6 +34,10 @@ class PostgresRunner:
         """
         self.connection_string = connection_string
         self._pool: asyncpg.Pool | None = None
+        self.max_rows = int(os.environ.get("CASS_MAX_ROWS", "500"))
+        self.timeout = float(os.environ.get("CASS_QUERY_TIMEOUT", "10"))
+        if not 1 <= self.max_rows <= 10000 or not 0 < self.timeout <= 60:
+            raise ValueError("CASS_MAX_ROWS must be 1..10000 and CASS_QUERY_TIMEOUT 0..60 seconds")
 
     async def connect(self) -> None:
         """Create a connection pool to the database."""
@@ -41,7 +49,7 @@ class PostgresRunner:
                 command_timeout=60,
             )
 
-    async def execute(self, sql: str) -> list[dict[str, Any]]:
+    async def execute(self, sql: str, *args) -> list[dict[str, Any]]:
         """
         Execute a SQL query and return results as list of dictionaries.
 
@@ -58,9 +66,25 @@ class PostgresRunner:
         if self._pool is None:
             raise RuntimeError("Not connected. Call connect() first.")
 
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(sql)
-            return [dict(row) for row in rows]
+        if len(sql) > 20000:
+            raise ValueError("Query exceeds 20000 characters")
+        statements = sqlglot.parse(sql, read="postgres")
+        if len(statements) != 1 or not isinstance(statements[0], exp.Query):
+            raise ValueError("Exactly one SELECT query is required")
+        if any(isinstance(node, (exp.DML, exp.DDL, exp.Into, exp.Lock)) for node in statements[0].walk()):
+            raise ValueError("Writes and locking queries are not allowed")
+
+        async with asyncio.timeout(self.timeout):
+            async with self._pool.acquire() as conn:
+                # Enforce read-only execution at the database boundary, including
+                # writes hidden inside CTEs. Use a least-privilege DB role as well.
+                async with conn.transaction(readonly=True):
+                    await conn.execute("SELECT set_config('statement_timeout', $1, true)", str(int(self.timeout * 1000)))
+                    cursor = await conn.cursor(sql, *args)
+                    rows = await cursor.fetch(self.max_rows + 1)
+                    if len(rows) > self.max_rows:
+                        raise ValueError(f"Query exceeds {self.max_rows} rows; add a LIMIT or aggregate the results")
+                return [dict(row) for row in rows]
 
     async def get_schema(self) -> str:
         """

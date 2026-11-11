@@ -1,0 +1,71 @@
+{
+  "model": "qwen3:4b",
+  "results": [
+    {
+      "question": "How many customers are there? Return one column named count.",
+      "sql": "SELECT COUNT(*) AS count\nFROM customers;",
+      "passed": true,
+      "error": null,
+      "actual": [
+        {
+          "count": 20
+        }
+      ],
+      "expected": [
+        {
+          "count": 20
+        }
+      ]
+    },
+    {
+      "question": "What is the sum of total_amount across all orders? Return one column named total.",
+      "sql": "SELECT SUM(total_amount) AS total\nFROM orders;",
+      "passed": true,
+      "error": null,
+      "actual": [
+        {
+          "total": "5215.34"
+        }
+      ],
+      "expected": [
+        {
+          "total": "5215.34"
+        }
+      ]
+    },
+    {
+      "question": "List the three most expensive products, returning name and price, sorted by price descending and name ascending.",
+      "sql": "SELECT name, price\nFROM products\nORDER BY price DESC, name ASC\nLIMIT 3;",
+      "passed": true,
+      "error": null,
+      "actual": [
+        {
+          "name": "Dumbbells Set",
+          "price": "149.99"
+        },
+        {
+          "name": "Winter Jacket",
+          "price": "149.99"
+        },
+        {
+          "name": "Wireless Bluetooth Headphones",
+          "price": "149.99"
+        }
+      ],
+      "expected": [
+        {
+          "name": "Dumbbells Set",
+          "price": "149.99"
+        },
+        {
+          "name": "Winter Jacket",
+          "price": "149.99"
+        },
+        {
+          "name": "Wireless Bluetooth Headphones",
+          "price": "149.99"
+        }
+      ]
+    }
+  ]
+}

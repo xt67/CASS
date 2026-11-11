@@ -10,7 +10,7 @@ export default defineConfig({
   // Dev server settings
   server: {
     port: 3000,
-    open: true,
+    open: false,
     // Proxy API calls to backend during development
     proxy: {
       "/api": {

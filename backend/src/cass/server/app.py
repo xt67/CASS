@@ -5,13 +5,16 @@ Main entry point for the CASS API server.
 """
 
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from fastapi.encoders import jsonable_encoder
+from cass.server.auth import require_auth
 
 from cass.integrations.database.postgres import PostgresRunner
 from cass.integrations.llm.ollama import OllamaProvider
@@ -38,25 +41,28 @@ async def lifespan(app: FastAPI):
     print("Starting CASS...")
 
     # Connect to database
-    db = PostgresRunner("postgresql://postgres:1693@localhost:5432/cassdb")
+    db = PostgresRunner(os.environ.get("DATABASE_URL", "postgresql://postgres:casspass@localhost:5432/cassdb"))
     await db.connect()
     print("Database connected!")
 
     # Create LLM and tools
-    llm = OllamaProvider(model="llama3.2:latest")
+    llm = OllamaProvider(
+        model=os.environ.get("OLLAMA_MODEL", "sqlcoder:7b"),
+        base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+    )
     sql_tool = RunSQLTool(db)
 
     # Create agent
     agent = Agent(llm=llm, tools=[sql_tool])
     print("Agent ready!")
 
-    yield  # App runs here
-
-    # Shutdown
-    print("Shutting down...")
-    if db:
-        await db.close()
-    print("Goodbye!")
+    try:
+        yield
+    finally:
+        if db:
+            await db.close()
+        db = None
+        agent = None
 
 
 # Create the FastAPI app
@@ -64,13 +70,14 @@ app = FastAPI(
     title="CASS API",
     description="Conversational AI SQL System",
     version="0.1.0",
+    dependencies=[Depends(require_auth)],
     lifespan=lifespan
 )
 
 # Allow frontend to connect (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=os.environ.get("CASS_ALLOWED_ORIGINS", "http://localhost:3000").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -87,7 +94,7 @@ async def root():
 async def get_schema():
     """Get the current database schema."""
     if db is None:
-        return {"error": "Database not connected"}
+        raise HTTPException(503, "Database not connected")
 
     schema = await db.get_schema()
     return {"schema": schema}
@@ -95,7 +102,7 @@ async def get_schema():
 
 class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
-    message: str
+    message: str = Field(min_length=1, max_length=4000)
 
 
 class ChatResponse(BaseModel):
@@ -115,7 +122,7 @@ async def chat(request: ChatRequest):
         {"message": "How many customers are there?"}
     """
     if agent is None or db is None:
-        return ChatResponse(answer="System not ready", sql=None, data=None, error="System not initialized")
+        raise HTTPException(503, "System not initialized")
 
     # Get schema for context
     schema = await db.get_schema()
@@ -158,26 +165,19 @@ async def describe_table(table_name: str):
     if db is None:
         raise HTTPException(status_code=503, detail="Database not connected")
 
-    # Get columns
-    columns_query = """
+    columns = await db.execute("""
         SELECT column_name, data_type, is_nullable, column_default
         FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = $1
         ORDER BY ordinal_position
-    """
-    # Use parameterized query to prevent SQL injection
-    columns = await db.execute(f"""
-        SELECT column_name, data_type, is_nullable, column_default
-        FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = '{table_name}'
-        ORDER BY ordinal_position
-    """)
+    """, table_name)
 
     if not columns:
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
     # Get row count
-    count_result = await db.execute(f"SELECT COUNT(*) as count FROM {table_name}")
+    quoted = '"' + table_name.replace('"', '""') + '"'
+    count_result = await db.execute(f"SELECT COUNT(*) as count FROM public.{quoted}")
     row_count = count_result[0]["count"] if count_result else 0
 
     return {
@@ -189,7 +189,7 @@ async def describe_table(table_name: str):
 
 class SqlRequest(BaseModel):
     """Request body for raw SQL execution."""
-    sql: str
+    sql: str = Field(min_length=1, max_length=20000)
 
 
 @app.post("/sql")
@@ -204,23 +204,6 @@ async def execute_sql(request: SqlRequest):
     if db is None:
         raise HTTPException(status_code=503, detail="Database not connected")
 
-    # Basic SQL injection prevention - only allow SELECT
-    sql_upper = request.sql.strip().upper()
-    if not sql_upper.startswith("SELECT"):
-        raise HTTPException(
-            status_code=400,
-            detail="Only SELECT queries are allowed"
-        )
-
-    # Block dangerous keywords
-    dangerous = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE", "CREATE"]
-    for keyword in dangerous:
-        if keyword in sql_upper:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Dangerous keyword '{keyword}' not allowed"
-            )
-
     try:
         results = await db.execute(request.sql)
         return {"data": results, "row_count": len(results)}
@@ -229,13 +212,14 @@ async def execute_sql(request: SqlRequest):
 
 
 @app.get("/sample/{table_name}")
-async def get_sample_data(table_name: str, limit: int = 5):
+async def get_sample_data(table_name: str, limit: int = Query(default=5, ge=1, le=500)):
     """Get sample rows from a table."""
     if db is None:
         raise HTTPException(status_code=503, detail="Database not connected")
 
     try:
-        results = await db.execute(f"SELECT * FROM {table_name} LIMIT {limit}")
+        quoted = '"' + table_name.replace('"', '""') + '"'
+        results = await db.execute(f"SELECT * FROM public.{quoted} LIMIT $1", limit)
         return {"table": table_name, "data": results}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -279,19 +263,24 @@ async def stream_chat_response(message: str, schema: str) -> AsyncGenerator[str,
             if db is not None:
                 result = await agent.tools["run_sql"].execute(sql=sql)
                 if result.success:
-                    yield f"data: {json.dumps({'type': 'data', 'content': result.data})}\n\n"
+                    yield f"data: {json.dumps(jsonable_encoder({'type': 'data', 'content': result.data}))}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'content': result.error})}\n\n"
 
         # Send end event
-        yield f"data: {json.dumps({'type': 'end', 'content': ''})}\n\n"
-
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
+    yield f"data: {json.dumps({'type': 'end', 'content': ''})}\n\n"
+
+
+@app.post("/chat/stream")
+async def chat_stream_post(request: ChatRequest):
+    return await chat_stream(request.message)
+
 
 @app.get("/chat/stream")
-async def chat_stream(message: str):
+async def chat_stream(message: str = Query(min_length=1, max_length=4000)):
     """
     Stream chat response using Server-Sent Events (SSE).
 

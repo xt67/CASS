@@ -4,7 +4,7 @@
  * =============================================================================
  */
 
-import { streamChat, checkHealth, getSchema, sendChat } from "./utils/sse.js";
+import { streamChat, checkHealth, getSchema, apiFetch, setApiToken } from "./utils/sse.js";
 
 // =============================================================================
 // DOM Elements
@@ -19,7 +19,6 @@ const btnAdd = document.getElementById("btn-add");
 const sqlInput = document.getElementById("sql-input");
 const lineNumbers = document.getElementById("line-numbers");
 const btnRun = document.getElementById("btn-run");
-const btnSave = document.getElementById("btn-save");
 
 // Chat
 const chatForm = document.getElementById("chat-form");
@@ -203,7 +202,7 @@ async function runQuery() {
   hideAiMessage();
   
   try {
-    const response = await fetch("/api/sql", {
+    const response = await apiFetch("/sql", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sql })
@@ -239,17 +238,11 @@ async function handleChat(event) {
   
   try {
     // Use streaming to generate SQL
-    let fullResponse = "";
-    let extractedSql = "";
     let resultData = null;
     
     await new Promise((resolve, reject) => {
       streamChat(message, {
-        onToken(token) {
-          fullResponse += token;
-        },
         onSql(sql) {
-          extractedSql = sql;
           sqlInput.value = sql;
           updateLineNumbers();
         },
@@ -296,7 +289,7 @@ async function checkConnection() {
   try {
     const status = await checkHealth();
     updateStatus(true, status.message || "Connected");
-  } catch (error) {
+  } catch {
     updateStatus(false, "Backend offline");
   }
 }
@@ -373,3 +366,8 @@ checkConnection();
 setInterval(checkConnection, 30000);
 
 console.log("🗃️ CASS Frontend loaded (Chartbrew-style)");
+
+btnConnection.addEventListener("click", () => {
+  const token = window.prompt("API access token (leave blank for explicitly enabled local development)");
+  if (token !== null) { setApiToken(token); checkConnection(); }
+});

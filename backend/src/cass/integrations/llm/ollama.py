@@ -33,6 +33,7 @@ class OllamaProvider(LlmProvider):
                 f"{self.base_url}/api/chat",
                 json={
                     "model": self.model,
+                    "options": {"num_predict": 2048},
                     "messages": self._format_messages(messages),
                     "stream": False
                 }
@@ -54,6 +55,7 @@ class OllamaProvider(LlmProvider):
                 f"{self.base_url}/api/chat",
                 json={
                     "model": self.model,
+                    "options": {"num_predict": 2048},
                     "messages": self._format_messages(messages),
                     "stream": True
                 }

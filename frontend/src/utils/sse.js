@@ -1,142 +1,61 @@
-/**
- * =============================================================================
- * SSE (Server-Sent Events) Utility
- * =============================================================================
- *
- * Handles streaming responses from the backend /chat/stream endpoint.
- *
- * Event Types:
- *   - start: Stream has begun
- *   - token: Individual token from LLM
- *   - sql: Extracted SQL query
- *   - data: Query results (JSON array)
- *   - error: Error message
- *   - end: Stream complete
- */
-
-/**
- * Configuration for the SSE client
- */
-const config = {
-  // In development, Vite proxy handles this. In production, use full URL.
-  baseUrl: import.meta.env.DEV ? "/api" : "http://localhost:8001",
-};
-
-/**
- * Create an SSE connection to stream chat responses
- *
- * @param {string} message - The user's question
- * @param {Object} callbacks - Event callbacks
- * @param {Function} callbacks.onStart - Called when stream starts
- * @param {Function} callbacks.onToken - Called for each token
- * @param {Function} callbacks.onSql - Called with extracted SQL
- * @param {Function} callbacks.onData - Called with query results
- * @param {Function} callbacks.onError - Called on error
- * @param {Function} callbacks.onEnd - Called when stream ends
- * @returns {EventSource} The EventSource instance (for cleanup)
- */
+/** Authenticated API client. Tokens stay in memory and are never put in URLs. */
+const baseUrl = (import.meta.env?.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
+let apiToken = "";
+export function setApiToken(token) { apiToken = token.trim(); }
+export async function apiFetch(path, options = {}) {
+  const headers = new Headers(options.headers);
+  if (apiToken) headers.set("Authorization", `Bearer ${apiToken}`);
+  const response = await fetch(`${baseUrl}${path}`, { ...options, headers });
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  return response;
+}
 export function streamChat(message, callbacks = {}) {
-  const encodedMessage = encodeURIComponent(message);
-  const url = `${config.baseUrl}/chat/stream?message=${encodedMessage}`;
-
-  const eventSource = new EventSource(url);
-
-  eventSource.onmessage = (event) => {
+  const controller = new AbortController();
+  (async () => {
+    let reader;
+    let ended = false;
     try {
-      const data = JSON.parse(event.data);
-
-      switch (data.type) {
-        case "start":
-          callbacks.onStart?.();
+      const response = await apiFetch("/chat/stream", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }), signal: controller.signal,
+      });
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (!ended) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        let match;
+        while ((match = /\r?\n\r?\n/.exec(buffer))) {
+          const block = buffer.slice(0, match.index);
+          buffer = buffer.slice(match.index + match[0].length);
+          const payload = block.split(/\r?\n/).filter(line => line.startsWith("data:"))
+            .map(line => line.slice(5).trimStart()).join("\n");
+          if (!payload) continue;
+          const event = JSON.parse(payload);
+          const names = { start: "onStart", token: "onToken", sql: "onSql", data: "onData" };
+          if (event.type === "error") throw new Error(event.content);
+          if (event.type === "end") { ended = true; callbacks.onEnd?.(); break; }
+          callbacks[names[event.type]]?.(event.content);
+        }
+        if (done) {
+          if (!ended) throw new Error("Stream ended before completion");
           break;
-        case "token":
-          callbacks.onToken?.(data.content);
-          break;
-        case "sql":
-          callbacks.onSql?.(data.content);
-          break;
-        case "data":
-          callbacks.onData?.(data.content);
-          break;
-        case "error":
-          callbacks.onError?.(data.content);
-          break;
-        case "end":
-          callbacks.onEnd?.();
-          eventSource.close();
-          break;
+        }
       }
-    } catch (e) {
-      console.error("Failed to parse SSE event:", e);
-      callbacks.onError?.("Failed to parse response");
+    } catch (error) {
+      if (error.name !== "AbortError") callbacks.onError?.(error.message);
+    } finally {
+      await reader?.cancel().catch(() => {});
+      reader?.releaseLock();
     }
-  };
-
-  eventSource.onerror = (error) => {
-    console.error("SSE connection error:", error);
-    callbacks.onError?.("Connection lost");
-    eventSource.close();
-  };
-
-  return eventSource;
+  })();
+  return { close: () => controller.abort() };
 }
-
-/**
- * Non-streaming chat request (uses POST /chat)
- *
- * @param {string} message - The user's question
- * @returns {Promise<Object>} Response with answer, sql, data
- */
 export async function sendChat(message) {
-  const response = await fetch(`${config.baseUrl}/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-  }
-
-  return response.json();
+  return (await apiFetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }) })).json();
 }
-
-/**
- * Check API health and get status
- *
- * @returns {Promise<Object>} Status object
- */
-export async function checkHealth() {
-  const response = await fetch(`${config.baseUrl}/`);
-  return response.json();
-}
-
-/**
- * Get database schema
- *
- * @returns {Promise<string>} Database schema
- */
-export async function getSchema() {
-  const response = await fetch(`${config.baseUrl}/schema`);
-  const data = await response.json();
-  return data.schema;
-}
-
-/**
- * Get list of tables
- *
- * @returns {Promise<string[]>} Array of table names
- */
-export async function getTables() {
-  const response = await fetch(`${config.baseUrl}/tables`);
-  const data = await response.json();
-  return data.tables;
-}
-
-export default {
-  streamChat,
-  sendChat,
-  checkHealth,
-  getSchema,
-  getTables,
-};
+export async function checkHealth() { return (await apiFetch("/")).json(); }
+export async function getSchema() { return (await (await apiFetch("/schema")).json()).schema; }
+export async function getTables() { return (await (await apiFetch("/tables")).json()).tables; }
